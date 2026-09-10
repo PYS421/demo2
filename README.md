@@ -366,21 +366,6 @@ F1
 ---
 
 
-## 环境
-
-```text
-Python 3.x
-PyTorch
-Transformers
-SwanLab
-```
-
-安装依赖：
-
-```bash
-pip install -r requirements.txt
-```
-
 ---
 
 ## 项目总结
