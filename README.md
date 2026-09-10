@@ -363,45 +363,8 @@ F1
 
 评价时忽略 `-100` 对应的特殊 Token 和 Padding。
 
-当前采用课程实验中的简化 Token-level F1 计算方式。
-
 ---
 
-## 测试代码
-
-### Dataset 测试
-
-```bash
-python test_dataset.py
-```
-
-用于测试原始数据读取。
-
-### DataLoader 测试
-
-```bash
-python test_dataloader.py
-```
-
-用于测试 DataLoader 和动态 Padding。
-
-### Tokenizer 对齐测试
-
-```bash
-python test_alignment.py
-```
-
-用于测试 Tokenizer 与 BIO 标签对齐。
-
-### 模型测试
-
-```bash
-python test_model.py
-```
-
-用于测试模型前向传播和 Loss 计算。
-
----
 
 ## 环境
 
@@ -417,23 +380,6 @@ SwanLab
 ```bash
 pip install -r requirements.txt
 ```
-
----
-
-## 注意事项
-
-预训练模型使用 Hugging Face 接口加载，第一次运行时需要下载模型。
-
-训练产生的：
-
-```text
-outputs/
-swanlog/
-```
-
-建议不要提交到 GitHub。
-
-数据集是否可以公开上传，需要根据课程要求和数据集许可确定。
 
 ---
 
