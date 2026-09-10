@@ -1,0 +1,21 @@
+# Dataset
+data/
+
+# Python
+__pycache__/
+*.pyc
+
+# Model
+outputs/
+*.pt
+*.pth
+
+# SwanLab
+swanlog/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
