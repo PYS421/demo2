@@ -1,0 +1,19 @@
+{
+    "dataset": "Weibo",
+    "model_name": "google-bert/bert-base-chinese",
+
+    "train_file": "data/weibo/train.txt",
+    "dev_file": "data/weibo/dev.txt",
+    "test_file": "data/weibo/test.txt",
+
+    "batch_size": 16,
+    "learning_rate": 3e-5,
+    "epochs": 8,
+    "max_length": 128,
+    "dropout": 0.1,
+
+    "seed": 42,
+
+    "save_path": "outputs/weibo_bert_best.pt",
+    "experiment_name": "weibo_bert"
+}

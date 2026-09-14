@@ -1,0 +1,19 @@
+{
+    "dataset": "MSRA",
+    "model_name": "hfl/chinese-bert-wwm",
+
+    "train_file": "data/MSRA/train_5k.txt",
+    "dev_file": "data/MSRA/dev_1k.txt",
+    "test_file": "data/MSRA/test_1k.txt",
+
+    "batch_size": 16,
+    "learning_rate": 3e-5,
+    "epochs": 8,
+    "max_length": 128,
+    "dropout": 0.1,
+
+    "seed": 42,
+
+    "save_path": "outputs/msra_wwm_best.pt",
+    "experiment_name": "msra_wwm"
+}

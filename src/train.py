@@ -7,7 +7,7 @@ from transformers import AutoTokenizer
 from src.dataset import NERDataset, ner_collate_fn
 from src.labels import LabelManager
 from src.model import BertForNER
-from src.evaluate import evaluate
+from src.utils import set_seed, calculate_metrics
 
 
 def train_one_epoch(
@@ -16,22 +16,16 @@ def train_one_epoch(
     optimizer,
     device
 ):
-
     model.train()
 
     total_loss = 0.0
 
     for batch in data_loader:
-
-        # 1. 数据放到设备
-
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"].to(device)
-        # 2. 清空梯度
-        optimizer.zero_grad()
 
-        # 3. 前向传播
+        optimizer.zero_grad()
 
         outputs = model(
             input_ids=input_ids,
@@ -40,20 +34,13 @@ def train_one_epoch(
         )
 
         loss = outputs["loss"]
-        # 4. 反向传播
 
         loss.backward()
-
-        # 5. 更新参数
-
         optimizer.step()
 
         total_loss += loss.item()
 
-    # 平均 Loss
-    avg_loss = total_loss / len(data_loader)
-
-    return avg_loss
+    return total_loss / len(data_loader)
 
 
 def create_dataloader(
@@ -64,8 +51,6 @@ def create_dataloader(
     max_length,
     shuffle
 ):
-
-
     dataset = NERDataset(
         file_path=file_path,
         tokenizer=tokenizer,
@@ -86,9 +71,82 @@ def create_dataloader(
     return data_loader
 
 
-def train_model(config):
-    # 1. 设备
+@torch.no_grad()
+def evaluate_loader(
+    model,
+    data_loader,
+    device,
+    label_manager
+):
+    """
+    在 Dev/Test 上执行推理。
 
+    评价指标由 utils.py 的 calculate_metrics() 完成。
+    """
+    model.eval()
+
+    total_loss = 0.0
+    all_predictions = []
+    all_labels = []
+
+    for batch in data_loader:
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+        labels = batch["labels"].to(device)
+
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels
+        )
+
+        loss = outputs["loss"]
+        logits = outputs["logits"]
+
+        total_loss += loss.item()
+
+        predictions = torch.argmax(logits, dim=-1)
+
+        all_predictions.extend(
+            predictions.cpu().tolist()
+        )
+
+        all_labels.extend(
+            labels.cpu().tolist()
+        )
+
+    metrics = calculate_metrics(
+        predictions=all_predictions,
+        labels=all_labels,
+        id2label=label_manager.id2label
+    )
+
+    metrics["loss"] = total_loss / len(data_loader)
+
+    return metrics
+
+
+def train_model(config):
+    """
+    完整实验流程：
+
+        train -> 训练
+        dev   -> 选择最佳模型
+        test  -> 使用最佳模型进行最终测试
+
+    测试集不会参与训练和模型选择。
+    """
+
+    # =========================================================
+    # 1. 固定随机种子
+    # =========================================================
+    set_seed(config.seed)
+
+    print("随机种子：", config.seed)
+
+    # =========================================================
+    # 2. 设备
+    # =========================================================
     if torch.cuda.is_available():
         device = torch.device("cuda")
     else:
@@ -96,25 +154,27 @@ def train_model(config):
 
     print("使用设备：", device)
 
-    # 2. LabelManager
-
+    # =========================================================
+    # 3. LabelManager
+    # =========================================================
     label_manager = LabelManager.from_file(
         config.train_file
     )
 
     print("标签数量：", len(label_manager))
-
     print("label2id：")
     print(label_manager.label2id)
 
-    # 3. Tokenizer
-
+    # =========================================================
+    # 4. Tokenizer
+    # =========================================================
     tokenizer = AutoTokenizer.from_pretrained(
         config.model_name
     )
 
-    # 4. DataLoader
-
+    # =========================================================
+    # 5. DataLoader
+    # =========================================================
     train_loader = create_dataloader(
         file_path=config.train_file,
         tokenizer=tokenizer,
@@ -133,11 +193,22 @@ def train_model(config):
         shuffle=False
     )
 
+    test_loader = create_dataloader(
+        file_path=config.test_file,
+        tokenizer=tokenizer,
+        label_manager=label_manager,
+        batch_size=config.batch_size,
+        max_length=config.max_length,
+        shuffle=False
+    )
+
     print("训练集数量：", len(train_loader.dataset))
     print("验证集数量：", len(dev_loader.dataset))
+    print("测试集数量：", len(test_loader.dataset))
 
-    # 5. 初始化 SwanLab
-
+    # =========================================================
+    # 6. SwanLab
+    # =========================================================
     swanlab.init(
         project="bert-ner-project",
         experiment_name=config.experiment_name,
@@ -148,27 +219,34 @@ def train_model(config):
             "learning_rate": config.learning_rate,
             "epochs": config.epochs,
             "max_length": config.max_length,
-            "num_labels": len(label_manager)
+            "dropout": getattr(config, "dropout", 0.1),
+            "num_labels": len(label_manager),
+            "seed": config.seed
         }
     )
-    # 6. 创建模型
 
+    # =========================================================
+    # 7. 创建模型
+    # =========================================================
     model = BertForNER(
         model_name=config.model_name,
-        num_labels=len(label_manager)
+        num_labels=len(label_manager),
+        dropout=getattr(config, "dropout", 0.1)
     )
 
     model.to(device)
 
-    # 7. 创建优化器
-
+    # =========================================================
+    # 8. 优化器
+    # =========================================================
     optimizer = AdamW(
         model.parameters(),
         lr=config.learning_rate
     )
 
-    # 8. 开始训练
-
+    # =========================================================
+    # 9. 训练 + Dev
+    # =========================================================
     best_dev_f1 = -1.0
 
     for epoch in range(config.epochs):
@@ -178,8 +256,9 @@ def train_model(config):
         print(f"Epoch {epoch + 1}/{config.epochs}")
         print("=" * 60)
 
+        # -------------------------
         # Train
-
+        # -------------------------
         train_loss = train_one_epoch(
             model=model,
             data_loader=train_loader,
@@ -187,22 +266,21 @@ def train_model(config):
             device=device
         )
 
+        # -------------------------
         # Dev
-
-        dev_metrics = evaluate(
+        # -------------------------
+        dev_metrics = evaluate_loader(
             model=model,
             data_loader=dev_loader,
-            device=device
+            device=device,
+            label_manager=label_manager
         )
-
-        # 打印结果
 
         print(f"Train Loss:     {train_loss:.4f}")
         print(f"Dev Loss:       {dev_metrics['loss']:.4f}")
         print(f"Dev Precision:  {dev_metrics['precision']:.4f}")
         print(f"Dev Recall:     {dev_metrics['recall']:.4f}")
         print(f"Dev F1:         {dev_metrics['f1']:.4f}")
-        # SwanLab 记录
 
         swanlab.log({
             "train/loss": train_loss,
@@ -211,16 +289,15 @@ def train_model(config):
             "dev/recall": dev_metrics["recall"],
             "dev/f1": dev_metrics["f1"]
         })
-        # 保存最佳模型
 
+        # -------------------------
+        # 根据 Dev F1 保存最佳模型
+        # -------------------------
         if dev_metrics["f1"] > best_dev_f1:
 
             best_dev_f1 = dev_metrics["f1"]
 
-            # 创建保存目录
-            save_dir = os.path.dirname(
-                config.save_path
-            )
+            save_dir = os.path.dirname(config.save_path)
 
             if save_dir:
                 os.makedirs(
@@ -228,7 +305,6 @@ def train_model(config):
                     exist_ok=True
                 )
 
-            # 保存模型
             torch.save(
                 model.state_dict(),
                 config.save_path
@@ -241,15 +317,65 @@ def train_model(config):
             print(
                 f"模型保存到：{config.save_path}"
             )
-    # 9. SwanLab 记录最佳结果
+
+    # =========================================================
+    # 10. 记录最佳 Dev
+    # =========================================================
     swanlab.log({
         "best/dev_f1": best_dev_f1
     })
 
-    # 10. 结束
+    # =========================================================
+    # 11. 加载最佳模型
+    # =========================================================
     print()
     print("=" * 60)
-    print("训练完成")
+    print("训练完成，加载最佳模型进行测试")
+    print("=" * 60)
+
+    model.load_state_dict(
+        torch.load(
+            config.save_path,
+            map_location=device
+        )
+    )
+
+    # =========================================================
+    # 12. Test
+    # =========================================================
+    test_metrics = evaluate_loader(
+        model=model,
+        data_loader=test_loader,
+        device=device,
+        label_manager=label_manager
+    )
+
+    print()
+    print("=" * 60)
+    print("Test Result")
+    print("=" * 60)
+
+    print(f"Test Loss:       {test_metrics['loss']:.4f}")
+    print(f"Test Precision:  {test_metrics['precision']:.4f}")
+    print(f"Test Recall:     {test_metrics['recall']:.4f}")
+    print(f"Test F1:         {test_metrics['f1']:.4f}")
+
+    # =========================================================
+    # 13. SwanLab 记录 Test
+    # =========================================================
+    swanlab.log({
+        "test/loss": test_metrics["loss"],
+        "test/precision": test_metrics["precision"],
+        "test/recall": test_metrics["recall"],
+        "test/f1": test_metrics["f1"]
+    })
+
+    # =========================================================
+    # 14. 结束
+    # =========================================================
+    print()
+    print("=" * 60)
+    print("全部实验完成")
     print("=" * 60)
 
     print(
@@ -257,14 +383,23 @@ def train_model(config):
     )
 
     print(
+        f"最终 Test F1: {test_metrics['f1']:.4f}"
+    )
+
+    print(
         f"最佳模型：{config.save_path}"
     )
 
-    # 结束 SwanLab 实验
     swanlab.finish()
+
+    return {
+    "best_dev_f1": best_dev_f1,
+    "test_metrics": test_metrics
+}
 
 
 if __name__ == "__main__":
     from src.config import Config
 
     train_model(Config)
+

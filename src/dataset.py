@@ -16,22 +16,26 @@ class NERDataset(Dataset):
         self.label_manager = label_manager
         self.max_length = max_length
 
-        # 读取原始数据
         self.samples = self._load_data(file_path)
 
     def _load_data(self, file_path):
+        """
+        读取 BIO 格式数据。
 
+        每一行：
+            token label
+
+        空行表示一句话结束。
+        """
         samples = []
 
         tokens = []
         labels = []
 
         with open(file_path, "r", encoding="utf-8") as f:
-
             for line in f:
                 line = line.strip()
 
-                # 空行：一句话结束
                 if not line:
                     if tokens:
                         samples.append({
@@ -44,7 +48,6 @@ class NERDataset(Dataset):
 
                     continue
 
-                # 每行至少应该有 token 和 label
                 parts = line.split()
 
                 if len(parts) < 2:
@@ -66,8 +69,16 @@ class NERDataset(Dataset):
         return samples
 
     def _tokenize_and_align_labels(self, tokens, labels):
+        """
+        将原始 token 输入 tokenizer，并把 BIO 标签对齐到 tokenizer
+        产生的 token 上。
 
+        对于一个原始 token 被拆成多个 subword 的情况：
+            第一个 subword 保留原标签；
+            后续 subword 使用 -100，不参与 loss 和评价。
 
+        返回 word_ids，供评价阶段恢复有效 token 序列。
+        """
         encoding = self.tokenizer(
             tokens,
             is_split_into_words=True,
@@ -77,49 +88,46 @@ class NERDataset(Dataset):
             return_attention_mask=True
         )
 
-        # tokenizer 后的 token 对应哪个原始 token
         word_ids = encoding.word_ids()
 
         aligned_labels = []
+        aligned_word_ids = []
 
         previous_word_id = None
 
         for word_id in word_ids:
 
-            # 特殊 token：
-            # [CLS] / [SEP]
+            # [CLS] / [SEP] 等特殊 token
             if word_id is None:
                 aligned_labels.append(-100)
+                aligned_word_ids.append(None)
 
-            # 当前 token 是一个新的原始 token
+            # 当前是一个新的原始 token
             elif word_id != previous_word_id:
-
                 label = labels[word_id]
-
                 label_id = self.label_manager.encode(label)
 
                 aligned_labels.append(label_id)
+                aligned_word_ids.append(word_id)
 
-            # 一个原始 token 被拆成多个 subword
+            # 当前是同一个原始 token 的后续 subword
             else:
-                # 后续 subword 不重复标注
                 aligned_labels.append(-100)
+                aligned_word_ids.append(word_id)
 
             previous_word_id = word_id
 
         return {
             "input_ids": encoding["input_ids"],
             "attention_mask": encoding["attention_mask"],
-            "labels": aligned_labels
+            "labels": aligned_labels,
+            "word_ids": aligned_word_ids
         }
 
     def __len__(self):
-
         return len(self.samples)
 
     def __getitem__(self, index):
-
-
         sample = self.samples[index]
 
         encoded = self._tokenize_and_align_labels(
@@ -147,7 +155,7 @@ class NERDataset(Dataset):
 
 def ner_collate_fn(batch, pad_token_id):
 
-    # 找到当前 batch 中最长的序列
+    # 当前 batch 中最长的序列长度
     max_length = max(
         len(item["input_ids"])
         for item in batch
@@ -163,10 +171,8 @@ def ner_collate_fn(batch, pad_token_id):
         attention_mask = item["attention_mask"]
         label = item["labels"]
 
-        # 当前样本需要补多少个 PAD
         padding_length = max_length - len(input_id)
 
-        # input_ids
         padded_input_ids = torch.cat([
             input_id,
             torch.full(
@@ -176,7 +182,6 @@ def ner_collate_fn(batch, pad_token_id):
             )
         ])
 
-        # attention_mask
         padded_attention_mask = torch.cat([
             attention_mask,
             torch.zeros(
@@ -185,7 +190,6 @@ def ner_collate_fn(batch, pad_token_id):
             )
         ])
 
-        # labels
         padded_labels = torch.cat([
             label,
             torch.full(
@@ -198,8 +202,6 @@ def ner_collate_fn(batch, pad_token_id):
         input_ids.append(padded_input_ids)
         attention_masks.append(padded_attention_mask)
         labels.append(padded_labels)
-
-    # 组成 batch Tensor
 
     return {
         "input_ids": torch.stack(input_ids),
