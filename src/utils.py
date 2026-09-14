@@ -20,19 +20,6 @@ def set_seed(seed: int = 42):
 
 
 def extract_entities(labels, id2label):
-    """
-    从 BIO 标签序列中提取完整实体。
-
-    返回：
-        [(start, end, entity_type), ...]
-
-    例如：
-        O B-ORG I-ORG I-ORG O
-    返回：
-        [(1, 3, 'ORG')]
-
-    start / end 是当前“有效 token 序列”中的位置。
-    """
     entities = []
 
     start = None
