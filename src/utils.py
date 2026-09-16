@@ -4,6 +4,7 @@ import torch
 
 
 def set_seed(seed: int = 42):
+
     random.seed(seed)
     np.random.seed(seed)
 
@@ -13,102 +14,177 @@ def set_seed(seed: int = 42):
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
-    # 尽可能保证 CUDA 相关操作可复现
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
 
-def extract_entities(labels, id2label):
-    entities = []
+class NERMetrics:
+    def __init__(self, id2label):
+        self.id2label = id2label
+        self.reset()
 
-    start = None
-    entity_type = None
+    def reset(self):
+        self.true_positive = 0
+        self.predicted_total = 0
+        self.gold_total = 0
 
-    for i, label_id in enumerate(labels):
-        label = id2label[int(label_id)]
+    def _extract_entities(self, labels):
+        entities = set()
 
-        if label == "O":
-            if start is not None:
-                entities.append((start, i - 1, entity_type))
-                start = None
-                entity_type = None
-            continue
+        start = None
+        entity_type = None
 
-        if label.startswith("B-"):
-            if start is not None:
-                entities.append((start, i - 1, entity_type))
+        for i, label_id in enumerate(labels):
 
-            start = i
-            entity_type = label[2:]
-            continue
+            label = self.id2label[int(label_id)]
 
-        if label.startswith("I-"):
-            current_type = label[2:]
+            if label == "O":
 
-            if start is not None and entity_type == current_type:
+                if start is not None:
+                    entities.add(
+                        (
+                            start,
+                            i - 1,
+                            entity_type
+                        )
+                    )
+
+                    start = None
+                    entity_type = None
+
                 continue
 
-            # 非法 BIO：I-XXX 前面没有同类型实体，按新实体处理
-            if start is not None:
-                entities.append((start, i - 1, entity_type))
+            if label.startswith("B-"):
 
-            start = i
-            entity_type = current_type
+                if start is not None:
+                    entities.add(
+                        (
+                            start,
+                            i - 1,
+                            entity_type
+                        )
+                    )
 
-    if start is not None:
-        entities.append((start, len(labels) - 1, entity_type))
+                start = i
+                entity_type = label[2:]
 
-    return entities
-
-
-def calculate_metrics(predictions, labels, id2label):
-    true_positive = 0
-    predicted_total = 0
-    gold_total = 0
-
-    for pred_row, label_row in zip(predictions, labels):
-        valid_preds = []
-        valid_labels = []
-
-        for pred, label in zip(pred_row, label_row):
-            if int(label) == -100:
                 continue
 
-            valid_preds.append(int(pred))
-            valid_labels.append(int(label))
+            if label.startswith("I-"):
 
-        pred_entities = set(
-            extract_entities(valid_preds, id2label)
-        )
+                current_type = label[2:]
 
-        gold_entities = set(
-            extract_entities(valid_labels, id2label)
-        )
+                # 正常情况
+                if (
+                    start is not None
+                    and entity_type == current_type
+                ):
+                    continue
 
-        true_positive += len(pred_entities & gold_entities)
-        predicted_total += len(pred_entities)
-        gold_total += len(gold_entities)
+                # 非法 BIO：
+                # I-XXX 前面没有对应实体
+                if start is not None:
+                    entities.add(
+                        (
+                            start,
+                            i - 1,
+                            entity_type
+                        )
+                    )
 
-    precision = (
-        true_positive / predicted_total
-        if predicted_total > 0
-        else 0.0
-    )
+                start = i
+                entity_type = current_type
 
-    recall = (
-        true_positive / gold_total
-        if gold_total > 0
-        else 0.0
-    )
 
-    if precision + recall == 0:
-        f1 = 0.0
-    else:
-        f1 = 2 * precision * recall / (precision + recall)
+        if start is not None:
+            entities.add(
+                (
+                    start,
+                    len(labels) - 1,
+                    entity_type
+                )
+            )
 
-    return {
-        "precision": precision,
-        "recall": recall,
-        "f1": f1
-    }
+        return entities
 
+    def update(self, predictions, labels):
+        for pred_row, label_row in zip(
+            predictions,
+            labels
+        ):
+
+            valid_predictions = []
+            valid_labels = []
+
+            for pred, label in zip(
+                pred_row,
+                label_row
+            ):
+
+                # 忽略特殊 Token、Padding 和 subword
+                if int(label) == -100:
+                    continue
+
+                valid_predictions.append(
+                    int(pred)
+                )
+
+                valid_labels.append(
+                    int(label)
+                )
+
+            # 预测实体
+            pred_entities = self._extract_entities(
+                valid_predictions
+            )
+
+            # 真实实体
+            gold_entities = self._extract_entities(
+                valid_labels
+            )
+
+            # 完整实体匹配
+            self.true_positive += len(
+                pred_entities & gold_entities
+            )
+
+            self.predicted_total += len(
+                pred_entities
+            )
+
+            self.gold_total += len(
+                gold_entities
+            )
+
+    def compute(self):
+        if self.predicted_total == 0:
+            precision = 0.0
+        else:
+            precision = (
+                self.true_positive
+                / self.predicted_total
+            )
+
+        if self.gold_total == 0:
+            recall = 0.0
+        else:
+            recall = (
+                self.true_positive
+                / self.gold_total
+            )
+
+        if precision + recall == 0:
+            f1 = 0.0
+        else:
+            f1 = (
+                2
+                * precision
+                * recall
+                / (precision + recall)
+            )
+
+        return {
+            "precision": precision,
+            "recall": recall,
+            "f1": f1
+        }
